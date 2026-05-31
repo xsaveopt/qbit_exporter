@@ -1,0 +1,13 @@
+services:
+  qbit_exporter:
+    image: ghcr.io/sratabix/qbit_exporter:latest
+    container_name: qbit_exporter
+    restart: unless-stopped
+    ports:
+      - "9879:9879"
+    environment:
+      QBIT_URL: http://qbittorrent:8080
+      QBIT_USERNAME: admin
+      QBIT_PASSWORD: adminadmin
+      QBIT_PER_TORRENT: "false"
+      TZ: Europe/Amsterdam
