@@ -11,6 +11,9 @@ permissions:
   contents: read
   packages: write
 
+env:
+  VT_API_KEY: ${{ secrets.VT_API_KEY }}
+
 jobs:
   ci:
     name: Lint & build
@@ -18,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
@@ -49,6 +52,14 @@ jobs:
               -o dist/qbit_exporter_linux_${arch} .
           done
 
+      - name: Scan with VirusTotal
+        if: ${{ github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/v') && env.VT_API_KEY != '' }}
+        uses: crazy-max/ghaction-virustotal@v5
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          request_rate: 4
+          files: dist/qbit_exporter_linux_*
+
       - name: Upload dev build
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v7
@@ -64,8 +75,8 @@ jobs:
     if: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v') }}
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -82,13 +93,13 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
@@ -111,7 +122,7 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Build binaries
@@ -122,10 +133,35 @@ jobs:
               go build -trimpath -ldflags "-s -w -X main.version=${{ github.ref_name }}" \
               -o dist/qbit_exporter_linux_${arch} .
           done
+      - name: Scan with VirusTotal
+        id: vt
+        if: ${{ env.VT_API_KEY != '' }}
+        uses: crazy-max/ghaction-virustotal@v5
+        with:
+          vt_api_key: ${{ secrets.VT_API_KEY }}
+          request_rate: 4
+          files: dist/qbit_exporter_linux_*
+
+      - name: VirusTotal summary
+        id: vtsum
+        if: ${{ env.VT_API_KEY != '' }}
+        shell: bash
+        run: |
+          {
+            echo "results<<EOF"
+            echo "### VirusTotal scans"
+            for f in dist/qbit_exporter_linux_*; do
+              sha=$(sha256sum "$f" | cut -d ' ' -f1)
+              echo "- [$(basename "$f")](https://www.virustotal.com/gui/file/$sha)"
+            done
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
+          body: ${{ steps.vtsum.outputs.results }}
           files: dist/*
 
   publish:
@@ -135,7 +171,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -151,7 +187,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64
