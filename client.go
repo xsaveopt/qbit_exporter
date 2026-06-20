@@ -71,6 +71,9 @@ func (c *Client) login(ctx context.Context) error {
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("login forbidden (banned IP? too many failed attempts): %s", strings.TrimSpace(string(body)))
 	}
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
 	if resp.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != "Ok." {
 		return fmt.Errorf("login failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
