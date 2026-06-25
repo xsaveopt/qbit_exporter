@@ -36,7 +36,9 @@ sudoedit /etc/qbit_exporter.env
 QBIT_URL=http://127.0.0.1:8080
 QBIT_USERNAME=admin
 QBIT_PASSWORD=changeme
+QBIT_DB_PATH=/var/lib/qbit_exporter/qbit_exporter.db
 # QBIT_PER_TORRENT=true   # enable per-torrent metrics on small instances
+# QBIT_TRACKER_STATS=false   # disable per-tracker ratio tracking
 ```
 
 If qBittorrent has "Bypass authentication for clients on localhost" enabled,
@@ -61,6 +63,9 @@ EnvironmentFile=/etc/qbit_exporter.env
 ExecStart=/usr/local/bin/qbit_exporter --web.listen-address=:9879
 Restart=on-failure
 RestartSec=5
+
+# Per-tracker SQLite database lives here (writable under ProtectSystem=strict)
+StateDirectory=qbit_exporter
 
 # Hardening
 NoNewPrivileges=true
@@ -95,5 +100,6 @@ sudo journalctl -fu qbit_exporter
 sudo systemctl disable --now qbit_exporter
 sudo rm /etc/systemd/system/qbit_exporter.service /etc/qbit_exporter.env
 sudo rm /usr/local/bin/qbit_exporter
+sudo rm -rf /var/lib/qbit_exporter
 sudo userdel qbit_exporter
 ```

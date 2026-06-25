@@ -228,6 +228,54 @@
       "targets": [
         { "expr": "qbittorrent_category_up_speed_bytes{instance=~\"$instance\"}", "legendFormat": "{{category}}", "refId": "A" }
       ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Ratio by tracker",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 2, "min": 0, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "targets": [
+        { "expr": "qbittorrent_tracker_ratio{instance=~\"$instance\"}", "legendFormat": "{{tracker}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Tracker totals",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Uploaded" }, "properties": [ { "id": "unit", "value": "bytes" } ] },
+          { "matcher": { "id": "byName", "options": "Downloaded" }, "properties": [ { "id": "unit", "value": "bytes" } ] },
+          { "matcher": { "id": "byName", "options": "Ratio" }, "properties": [ { "id": "unit", "value": "short" }, { "id": "decimals", "value": 2 } ] }
+        ]
+      },
+      "options": { "showHeader": true, "sortBy": [ { "displayName": "Uploaded", "desc": true } ] },
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "instance": true, "job": true, "__name__": true },
+            "renameByName": {
+              "tracker": "Tracker",
+              "Value #U": "Uploaded",
+              "Value #D": "Downloaded",
+              "Value #R": "Ratio",
+              "Value #T": "Torrents"
+            }
+          }
+        }
+      ],
+      "targets": [
+        { "expr": "qbittorrent_tracker_uploaded_bytes{instance=~\"$instance\"}", "format": "table", "instant": true, "refId": "U" },
+        { "expr": "qbittorrent_tracker_downloaded_bytes{instance=~\"$instance\"}", "format": "table", "instant": true, "refId": "D" },
+        { "expr": "qbittorrent_tracker_ratio{instance=~\"$instance\"}", "format": "table", "instant": true, "refId": "R" },
+        { "expr": "qbittorrent_tracker_torrents_count{instance=~\"$instance\"}", "format": "table", "instant": true, "refId": "T" }
+      ]
     }
   ]
 }

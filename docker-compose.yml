@@ -10,4 +10,10 @@ services:
       QBIT_USERNAME: admin
       QBIT_PASSWORD: adminadmin
       QBIT_PER_TORRENT: "false"
+      QBIT_TRACKER_STATS: "true"
       TZ: Europe/Amsterdam
+    volumes:
+      - qbit_exporter_data:/data
+
+volumes:
+  qbit_exporter_data:

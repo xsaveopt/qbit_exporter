@@ -14,8 +14,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags "-s -w -X main.version=${VERSION}" \
       -o /qbit_exporter .
 
+RUN mkdir -p /data
+
 FROM gcr.io/distroless/static:nonroot
 COPY --from=build /qbit_exporter /usr/local/bin/qbit_exporter
+COPY --from=build --chown=nonroot:nonroot /data /data
+ENV QBIT_DB_PATH=/data/qbit_exporter.db
 EXPOSE 9879
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/qbit_exporter"]

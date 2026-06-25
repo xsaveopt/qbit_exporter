@@ -241,6 +241,44 @@ type Snapshot struct {
 	Torrents   []Torrent
 }
 
+type trackerEntry struct {
+	URL string `json:"url"`
+}
+
+func (c *Client) Trackers(ctx context.Context, hash string) ([]string, error) {
+	var entries []trackerEntry
+	if err := c.getJSON(ctx, "/api/v2/torrents/trackers?hash="+url.QueryEscape(hash), &entries); err != nil {
+		return nil, err
+	}
+	hosts := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		host := trackerHost(e.URL)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
+}
+
+func trackerHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	switch u.Scheme {
+	case "http", "https", "udp", "ws", "wss":
+		return u.Hostname()
+	default:
+		return ""
+	}
+}
+
 func (c *Client) Scrape(ctx context.Context) (*Snapshot, error) {
 	snap := &Snapshot{}
 

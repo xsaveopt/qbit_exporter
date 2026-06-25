@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -11,11 +12,15 @@ import (
 
 const namespace = "qbittorrent"
 
+const trackerFetchWorkers = 8
+
 type Collector struct {
-	client     *Client
-	timeout    time.Duration
-	perTorrent bool
-	logger     *slog.Logger
+	client         *Client
+	store          *Store
+	timeout        time.Duration
+	perTorrent     bool
+	trackerRefresh time.Duration
+	logger         *slog.Logger
 
 	up             *prometheus.Desc
 	scrapeDuration *prometheus.Desc
@@ -65,19 +70,26 @@ type Collector struct {
 	tETA        *prometheus.Desc
 	tAddedOn    *prometheus.Desc
 	tTimeActive *prometheus.Desc
+
+	trkUploaded   *prometheus.Desc
+	trkDownloaded *prometheus.Desc
+	trkRatio      *prometheus.Desc
+	trkTorrents   *prometheus.Desc
 }
 
 func g(name, help string, labels ...string) *prometheus.Desc {
 	return prometheus.NewDesc(prometheus.BuildFQName(namespace, "", name), help, labels, nil)
 }
 
-func NewCollector(client *Client, timeout time.Duration, perTorrent bool, logger *slog.Logger) *Collector {
+func NewCollector(client *Client, store *Store, timeout time.Duration, perTorrent bool, trackerRefresh time.Duration, logger *slog.Logger) *Collector {
 	torrentLabels := []string{"hash", "name", "category", "state"}
 	return &Collector{
-		client:     client,
-		timeout:    timeout,
-		perTorrent: perTorrent,
-		logger:     logger,
+		client:         client,
+		store:          store,
+		timeout:        timeout,
+		perTorrent:     perTorrent,
+		trackerRefresh: trackerRefresh,
+		logger:         logger,
 
 		up:             g("up", "Whether the last scrape of qBittorrent succeeded (1) or not (0)."),
 		scrapeDuration: g("scrape_duration_seconds", "Duration of the qBittorrent scrape in seconds."),
@@ -127,6 +139,11 @@ func NewCollector(client *Client, timeout time.Duration, perTorrent bool, logger
 		tETA:        g("torrent_eta_seconds", "Estimated time to completion in seconds (8640000 = infinity).", torrentLabels...),
 		tAddedOn:    g("torrent_added_timestamp_seconds", "Unix timestamp the torrent was added.", torrentLabels...),
 		tTimeActive: g("torrent_time_active_seconds", "Total active time in seconds.", torrentLabels...),
+
+		trkUploaded:   g("tracker_uploaded_bytes", "Total uploaded bytes attributed to a tracker across all torrents that announce to it, including deleted torrents.", "tracker"),
+		trkDownloaded: g("tracker_downloaded_bytes", "Total downloaded bytes attributed to a tracker across all torrents that announce to it, including deleted torrents.", "tracker"),
+		trkRatio:      g("tracker_ratio", "Share ratio per tracker (uploaded/downloaded), including deleted torrents.", "tracker"),
+		trkTorrents:   g("tracker_torrents_count", "Number of torrents ever seen announcing to a tracker, including deleted torrents.", "tracker"),
 	}
 }
 
@@ -154,6 +171,9 @@ func (c *Collector) Collect(ch chan<- prometheus.Metric) {
 	c.collectApp(ch, snap)
 	c.collectServer(ch, snap.Server)
 	c.collectTorrents(ch, snap.Torrents)
+	if c.store != nil {
+		c.collectTrackers(ctx, ch, snap.Torrents)
+	}
 }
 
 func (c *Collector) collectApp(ch chan<- prometheus.Metric, snap *Snapshot) {
@@ -254,6 +274,74 @@ func (c *Collector) collectOneTorrent(ch chan<- prometheus.Metric, t Torrent) {
 	m(c.tETA, float64(t.ETA))
 	m(c.tAddedOn, float64(t.AddedOn))
 	m(c.tTimeActive, float64(t.TimeActive))
+}
+
+func (c *Collector) collectTrackers(ctx context.Context, ch chan<- prometheus.Metric, torrents []Torrent) {
+	now := time.Now().Unix()
+	maxAge := int64(c.trackerRefresh.Seconds())
+
+	var stale []Torrent
+	for _, t := range torrents {
+		if err := c.store.UpsertTorrent(t.Hash, t.Name, t.Uploaded, t.Downloaded, now); err != nil {
+			c.logger.Error("store upsert torrent", "hash", t.Hash, "err", err)
+			continue
+		}
+		old, err := c.store.TrackersStale(t.Hash, now, maxAge)
+		if err != nil {
+			c.logger.Error("store trackers stale", "hash", t.Hash, "err", err)
+			continue
+		}
+		if old {
+			stale = append(stale, t)
+		}
+	}
+	c.refreshTrackers(ctx, stale, now)
+
+	stats, err := c.store.TrackerStats()
+	if err != nil {
+		c.logger.Error("store tracker stats", "err", err)
+		return
+	}
+	for _, st := range stats {
+		ch <- prometheus.MustNewConstMetric(c.trkUploaded, prometheus.GaugeValue, float64(st.Uploaded), st.Tracker)
+		ch <- prometheus.MustNewConstMetric(c.trkDownloaded, prometheus.GaugeValue, float64(st.Downloaded), st.Tracker)
+		ch <- prometheus.MustNewConstMetric(c.trkTorrents, prometheus.GaugeValue, float64(st.Torrents), st.Tracker)
+		ratio := 0.0
+		if st.Downloaded > 0 {
+			ratio = float64(st.Uploaded) / float64(st.Downloaded)
+		}
+		ch <- prometheus.MustNewConstMetric(c.trkRatio, prometheus.GaugeValue, ratio, st.Tracker)
+	}
+}
+
+func (c *Collector) refreshTrackers(ctx context.Context, torrents []Torrent, now int64) {
+	if len(torrents) == 0 {
+		return
+	}
+	sem := make(chan struct{}, trackerFetchWorkers)
+	var wg sync.WaitGroup
+	for _, t := range torrents {
+		select {
+		case <-ctx.Done():
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(t Torrent) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			trackers, err := c.client.Trackers(ctx, t.Hash)
+			if err != nil {
+				c.logger.Warn("fetch trackers", "hash", t.Hash, "err", err)
+				return
+			}
+			if err := c.store.SetTrackers(t.Hash, trackers, now); err != nil {
+				c.logger.Error("store set trackers", "hash", t.Hash, "err", err)
+			}
+		}(t)
+	}
+	wg.Wait()
 }
 
 func parseFloat(s string) float64 {
