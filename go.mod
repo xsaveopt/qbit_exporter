@@ -1,4 +1,4 @@
-module github.com/sratabix/qbit_exporter
+module github.com/xsaveopt/qbit_exporter
 
 go 1.26
 

@@ -1,6 +1,6 @@
 services:
   qbit_exporter:
-    image: ghcr.io/sratabix/qbit_exporter:latest
+    image: ghcr.io/xsaveopt/qbit_exporter:latest
     container_name: qbit_exporter
     restart: unless-stopped
     ports:

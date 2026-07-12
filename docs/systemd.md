@@ -4,11 +4,11 @@ Reference unit + service-user setup. Copy what you need; nothing here is mandato
 
 ## Install the binary
 
-Download the binary for your architecture from the [latest release](https://github.com/sratabix/qbit_exporter/releases/latest) and drop it in `/usr/local/bin`:
+Download the binary for your architecture from the [latest release](https://github.com/xsaveopt/qbit_exporter/releases/latest) and drop it in `/usr/local/bin`:
 
 ```sh
 sudo curl -fL -o /usr/local/bin/qbit_exporter \
-  https://github.com/sratabix/qbit_exporter/releases/latest/download/qbit_exporter_linux_amd64
+  https://github.com/xsaveopt/qbit_exporter/releases/latest/download/qbit_exporter_linux_amd64
 sudo chmod +x /usr/local/bin/qbit_exporter
 ```
 
@@ -51,7 +51,7 @@ Drop at `/etc/systemd/system/qbit_exporter.service`:
 ```ini
 [Unit]
 Description=qBittorrent Prometheus exporter
-Documentation=https://github.com/sratabix/qbit_exporter
+Documentation=https://github.com/xsaveopt/qbit_exporter
 After=network-online.target
 Wants=network-online.target
 

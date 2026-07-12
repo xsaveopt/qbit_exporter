@@ -21,11 +21,11 @@ Per-tracker ratio is tracked separately, because the interesting number is what 
 
 ## Installation
 
-**Binary** — grab the Linux binary for your arch from the [latest release](https://github.com/sratabix/qbit_exporter/releases/latest):
+**Binary** — grab the Linux binary for your arch from the [latest release](https://github.com/xsaveopt/qbit_exporter/releases/latest):
 
 ```sh
 curl -fL -o qbit_exporter \
-  https://github.com/sratabix/qbit_exporter/releases/latest/download/qbit_exporter_linux_amd64
+  https://github.com/xsaveopt/qbit_exporter/releases/latest/download/qbit_exporter_linux_amd64
 chmod +x qbit_exporter
 ./qbit_exporter --qbit.url=http://localhost:8080 --qbit.username=admin --qbit.password=secret
 ```
@@ -38,7 +38,7 @@ To run it as a service, see [docs/systemd.md](docs/systemd.md).
 docker run -p 9879:9879 \
   -e QBIT_URL=http://host.docker.internal:8080 \
   -e QBIT_USERNAME=admin -e QBIT_PASSWORD=secret \
-  ghcr.io/sratabix/qbit_exporter:latest
+  ghcr.io/xsaveopt/qbit_exporter:latest
 ```
 
 ## docker-compose
@@ -46,7 +46,7 @@ docker run -p 9879:9879 \
 ```yaml
 services:
   qbit_exporter:
-    image: ghcr.io/sratabix/qbit_exporter:latest
+    image: ghcr.io/xsaveopt/qbit_exporter:latest
     container_name: qbit_exporter
     restart: unless-stopped
     ports:
@@ -105,7 +105,7 @@ A ready-made dashboard lives at [docs/grafana-dashboard.json](docs/grafana-dashb
 
 ## Image tags
 
-`latest` for the latest stable release. `1`, `1.2`, `1.2.3` to pin to a major, minor, or patch line. Pre-releases like `1.2.3-rc1` are never tagged `latest`. `dev` tracks the tip of `main`, rebuilt on every commit. Images are published to `ghcr.io/sratabix/qbit_exporter` and built for `linux/amd64`.
+`latest` for the latest stable release. `1`, `1.2`, `1.2.3` to pin to a major, minor, or patch line. Pre-releases like `1.2.3-rc1` are never tagged `latest`. `dev` tracks the tip of `main`, rebuilt on every commit. Images are published to `ghcr.io/xsaveopt/qbit_exporter` and built for `linux/amd64`.
 
 ## Environment variables
 
