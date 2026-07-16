@@ -3,6 +3,7 @@ services:
     image: ghcr.io/xsaveopt/qbit_exporter:latest
     container_name: qbit_exporter
     restart: unless-stopped
+    read_only: true
     ports:
       - "9879:9879"
     environment:
