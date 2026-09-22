@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -36,12 +38,17 @@ func run() error {
 		dbPath      = flag.String("db.path", env("QBIT_DB_PATH", "qbit_exporter.db"), "Path to the SQLite database used for per-tracker stats.")
 		trackerRfsh = flag.Duration("tracker-refresh", envDuration("QBIT_TRACKER_REFRESH", time.Hour), "How often to re-fetch each torrent's tracker list.")
 		showVersion = flag.Bool("version", false, "Print version and exit.")
+		healthcheck = flag.Bool("healthcheck", false, "Probe the running instance's /health endpoint and exit 0 if healthy, 1 otherwise.")
 	)
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Printf("qbit_exporter %s\n", version)
 		return nil
+	}
+
+	if *healthcheck {
+		return probeHealth(*listenAddr)
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -67,9 +74,16 @@ func run() error {
 
 	mux := http.NewServeMux()
 	mux.Handle(*metricsPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), *timeout)
+		defer cancel()
+		if err := client.Ping(ctx); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("degraded"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("up"))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `<html>
@@ -98,6 +112,25 @@ func run() error {
 	)
 	if err := srv.ListenAndServe(); err != nil {
 		return fmt.Errorf("server stopped: %w", err)
+	}
+	return nil
+}
+
+func probeHealth(listenAddr string) error {
+	_, port, err := net.SplitHostPort(listenAddr)
+	if err != nil || port == "" {
+		port = "9879"
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%s/health", port))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck: status %d", resp.StatusCode)
 	}
 	return nil
 }

@@ -279,6 +279,11 @@ func trackerHost(raw string) string {
 	}
 }
 
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.getString(ctx, "/api/v2/app/version")
+	return err
+}
+
 func (c *Client) Scrape(ctx context.Context) (*Snapshot, error) {
 	snap := &Snapshot{}
 

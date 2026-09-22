@@ -28,7 +28,7 @@ The latest tag follows the newest stable release, while 1, 1.2 and 1.2.3 pin a m
 Pre-releases such as 1.2.3-rc1 only get their own version tag.
 
 Once it is up, point a Prometheus scrape job at port 9879 and import docs/grafana-dashboard.json into Grafana for a ready-made dashboard.
-The server also answers on /healthz with a plain ok.
+The server also answers on /health with up or degraded, reflecting whether it can currently reach qBittorrent.
 
 ## Configuration
 

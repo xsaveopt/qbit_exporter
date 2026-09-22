@@ -22,4 +22,6 @@ COPY --from=build --chown=nonroot:nonroot /data /data
 ENV QBIT_DB_PATH=/data/qbit_exporter.db
 EXPOSE 9879
 USER nonroot:nonroot
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/qbit_exporter", "-healthcheck"]
 ENTRYPOINT ["/usr/local/bin/qbit_exporter"]
