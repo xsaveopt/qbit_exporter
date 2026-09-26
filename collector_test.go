@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -897,4 +898,118 @@ func TestRefreshTrackers(t *testing.T) {
 			t.Error("stale = false, want the torrent left stale after a failed fetch")
 		}
 	})
+}
+
+func TestCollectorCollectWithStore(t *testing.T) {
+	store := newStore(t)
+	c := newTestCollector(t, false, store)
+
+	samples := gatherSamples(t, c)
+	wantValue(t, samples, "qbittorrent_up", 1)
+	wantValue(t, samples, "qbittorrent_torrents_total", 2)
+
+	up := map[string]float64{}
+	for _, s := range samplesNamed(samples, "qbittorrent_tracker_uploaded_bytes") {
+		up[s.labels["tracker"]] = s.value
+	}
+	want := map[string]float64{"tracker-aaaa.example.org": 250, "tracker-bbbb.example.org": 0}
+	if len(up) != len(want) {
+		t.Fatalf("tracker uploaded = %v, want %v", up, want)
+	}
+	for tr, v := range want {
+		if got, ok := up[tr]; !ok || got != v {
+			t.Errorf("tracker uploaded %s = %v (present %v), want %v", tr, got, ok, v)
+		}
+	}
+	if n := len(samplesNamed(samples, "qbittorrent_tracker_ratio")); n != 2 {
+		t.Errorf("tracker ratio samples = %d, want 2", n)
+	}
+
+	stats, err := store.TrackerStats()
+	if err != nil {
+		t.Fatalf("TrackerStats: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Errorf("stored tracker stats = %+v, want two trackers", stats)
+	}
+
+	again := gatherSamples(t, c)
+	for _, s := range samplesNamed(again, "qbittorrent_tracker_uploaded_bytes") {
+		if s.value != want[s.labels["tracker"]] {
+			t.Errorf("second scrape %s = %v, want %v with unchanged counters", s.labels["tracker"], s.value, want[s.labels["tracker"]])
+		}
+	}
+}
+
+func TestCollectorCollectWithStoreScrapeFailure(t *testing.T) {
+	store := newStore(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewCollector(testClient(t, srv.URL, "", ""), store, 5*time.Second, false, time.Hour, discardLogger())
+	samples := gatherSamples(t, c)
+	wantValue(t, samples, "qbittorrent_up", 0)
+	if got := samplesNamed(samples, "qbittorrent_tracker_uploaded_bytes"); len(got) != 0 {
+		t.Errorf("tracker samples on a failed scrape = %d, want 0", len(got))
+	}
+}
+
+func TestRefreshTrackersConcurrentSessionExpiry(t *testing.T) {
+	var logins atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/auth/login" {
+			n := logins.Add(1)
+			http.SetCookie(w, &http.Cookie{Name: "SID", Value: "sid-" + strconv.FormatInt(n, 10), Path: "/"})
+			_, _ = io.WriteString(w, "Ok.")
+			return
+		}
+		ck, err := r.Cookie("SID")
+		if err != nil || ck.Value == "sid-1" {
+			time.Sleep(time.Millisecond)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = io.WriteString(w, `[{"url":"https://t-`+r.URL.Query().Get("hash")+`.example.org/announce"}]`)
+	}))
+	defer srv.Close()
+
+	store := newStore(t)
+	client := testClient(t, srv.URL, "admin", "pw")
+	if err := client.ensureLogin(context.Background()); err != nil {
+		t.Fatalf("ensureLogin: %v", err)
+	}
+	c := NewCollector(client, store, 5*time.Second, false, time.Hour, discardLogger())
+
+	const now = int64(1700000000)
+	var torrents []Torrent
+	for i := range trackerFetchWorkers * 3 {
+		tor := Torrent{Hash: "hash" + strconv.Itoa(i), Name: "n"}
+		if err := store.UpsertTorrent(tor.Hash, tor.Name, 0, 0, now); err != nil {
+			t.Fatalf("UpsertTorrent: %v", err)
+		}
+		torrents = append(torrents, tor)
+	}
+	c.refreshTrackers(context.Background(), torrents, now)
+
+	for _, tor := range torrents {
+		stale, err := store.TrackersStale(tor.Hash, now, 3600)
+		if err != nil {
+			t.Fatalf("TrackersStale: %v", err)
+		}
+		if stale {
+			t.Errorf("%s not refreshed after the session expired", tor.Hash)
+		}
+	}
+	stats, err := store.TrackerStats()
+	if err != nil {
+		t.Fatalf("TrackerStats: %v", err)
+	}
+	if len(stats) != len(torrents) {
+		t.Errorf("trackers = %d, want %d", len(stats), len(torrents))
+	}
+	if n := logins.Load(); n < 2 {
+		t.Errorf("logins = %d, want at least one re-login", n)
+	}
 }

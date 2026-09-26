@@ -387,6 +387,162 @@ func TestGetJSONForbiddenWithoutLogin(t *testing.T) {
 	}
 }
 
+func TestReloginEdges(t *testing.T) {
+	type getter func(c *Client) error
+	getters := map[string]getter{
+		"getJSON": func(c *Client) error {
+			return c.getJSON(context.Background(), "/api/v2/app/buildInfo", &BuildInfo{})
+		},
+		"getString": func(c *Client) error {
+			_, err := c.getString(context.Background(), "/api/v2/app/version")
+			return err
+		},
+	}
+
+	for name, get := range getters {
+		t.Run(name+" re-login failure is returned", func(t *testing.T) {
+			var logins, calls atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v2/auth/login" {
+					if logins.Add(1) == 1 {
+						_, _ = io.WriteString(w, "Ok.")
+						return
+					}
+					_, _ = io.WriteString(w, "Fails.")
+					return
+				}
+				calls.Add(1)
+				w.WriteHeader(http.StatusForbidden)
+			}))
+			defer srv.Close()
+
+			c := testClient(t, srv.URL, "admin", "pw")
+			err := get(c)
+			if err == nil || !strings.Contains(err.Error(), "login failed") {
+				t.Fatalf("error = %v, want the re-login failure", err)
+			}
+			if n := logins.Load(); n != 2 {
+				t.Errorf("logins = %d, want 2", n)
+			}
+			if n := calls.Load(); n != 1 {
+				t.Errorf("data calls = %d, want 1 (no retry after a failed re-login)", n)
+			}
+			if c.loggedIn {
+				t.Error("loggedIn = true after a failed re-login")
+			}
+		})
+
+		t.Run(name+" still forbidden after re-login", func(t *testing.T) {
+			var logins, calls atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v2/auth/login" {
+					logins.Add(1)
+					_, _ = io.WriteString(w, "Ok.")
+					return
+				}
+				calls.Add(1)
+				w.WriteHeader(http.StatusForbidden)
+			}))
+			defer srv.Close()
+
+			c := testClient(t, srv.URL, "admin", "pw")
+			err := get(c)
+			if err == nil || !strings.Contains(err.Error(), "status 403") {
+				t.Fatalf("error = %v, want a 403 status error", err)
+			}
+			if n := logins.Load(); n != 2 {
+				t.Errorf("logins = %d, want 2 (one re-login, no loop)", n)
+			}
+			if n := calls.Load(); n != 2 {
+				t.Errorf("data calls = %d, want 2", n)
+			}
+		})
+
+		t.Run(name+" retry transport error is returned", func(t *testing.T) {
+			var calls atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v2/auth/login" {
+					_, _ = io.WriteString(w, "Ok.")
+					return
+				}
+				if calls.Add(1) == 1 {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				hj, ok := w.(http.Hijacker)
+				if !ok {
+					t.Error("response writer cannot hijack")
+					return
+				}
+				conn, _, err := hj.Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+			}))
+			defer srv.Close()
+
+			c := testClient(t, srv.URL, "admin", "pw")
+			if err := get(c); err == nil {
+				t.Fatal("request succeeded, want the retry transport error")
+			}
+			if n := calls.Load(); n < 2 {
+				t.Errorf("data calls = %d, want the retry to be attempted", n)
+			}
+		})
+
+		t.Run(name+" a 401 does not trigger a re-login", func(t *testing.T) {
+			var logins atomic.Int64
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v2/auth/login" {
+					logins.Add(1)
+					_, _ = io.WriteString(w, "Ok.")
+					return
+				}
+				w.WriteHeader(http.StatusUnauthorized)
+			}))
+			defer srv.Close()
+
+			c := testClient(t, srv.URL, "admin", "pw")
+			err := get(c)
+			if err == nil || !strings.Contains(err.Error(), "status 401") {
+				t.Fatalf("error = %v, want a 401 status error", err)
+			}
+			if n := logins.Load(); n != 1 {
+				t.Errorf("logins = %d, want 1", n)
+			}
+		})
+	}
+
+	t.Run("session expiry mid-life is recovered once", func(t *testing.T) {
+		srv := newSessionServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, "v5.0.4")
+		})
+		c := testClient(t, srv.URL, "admin", "pw")
+
+		for range 3 {
+			if err := c.Ping(context.Background()); err != nil {
+				t.Fatalf("Ping: %v", err)
+			}
+		}
+		srv.mu.Lock()
+		srv.current = "expired"
+		srv.mu.Unlock()
+		for range 3 {
+			if err := c.Ping(context.Background()); err != nil {
+				t.Fatalf("Ping after expiry: %v", err)
+			}
+		}
+
+		logins, calls, _ := srv.counts()
+		if logins != 2 {
+			t.Errorf("logins = %d, want 2", logins)
+		}
+		if calls != 7 {
+			t.Errorf("data calls = %d, want 7 (six pings plus one forbidden retry)", calls)
+		}
+	})
+}
+
 func TestGetJSON(t *testing.T) {
 	t.Run("decodes into out", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -517,6 +673,56 @@ func TestRawGet(t *testing.T) {
 		c := testClient(t, srv.URL, "", "")
 		if _, _, err := c.rawGet(ctx, "/x"); err == nil {
 			t.Fatal("rawGet succeeded with a cancelled context")
+		}
+	})
+
+	t.Run("truncated body", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("response writer cannot hijack")
+				return
+			}
+			conn, buf, err := hj.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort")
+			_ = buf.Flush()
+			_ = conn.Close()
+		}))
+		defer srv.Close()
+
+		c := testClient(t, srv.URL, "", "")
+		body, status, err := c.rawGet(context.Background(), "/x")
+		if err == nil {
+			t.Fatal("rawGet succeeded with a truncated body")
+		}
+		if !strings.Contains(err.Error(), "read /x") {
+			t.Errorf("error = %q, want it to name the read of /x", err)
+		}
+		if status != http.StatusOK {
+			t.Errorf("status = %d, want the status that was received", status)
+		}
+		if body != nil {
+			t.Errorf("body = %q, want nil on a read error", body)
+		}
+	})
+
+	t.Run("truncated body fails getJSON and getString", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", "100")
+			_, _ = io.WriteString(w, `{"qt":"6`)
+		}))
+		defer srv.Close()
+
+		c := testClient(t, srv.URL, "", "")
+		if err := c.getJSON(context.Background(), "/api/v2/app/buildInfo", &BuildInfo{}); err == nil || !strings.Contains(err.Error(), "read ") {
+			t.Errorf("getJSON error = %v, want a read error", err)
+		}
+		if _, err := c.getString(context.Background(), "/api/v2/app/version"); err == nil || !strings.Contains(err.Error(), "read ") {
+			t.Errorf("getString error = %v, want a read error", err)
 		}
 	})
 }

@@ -1,7 +1,10 @@
 package main
 
 import (
+	"database/sql"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -491,4 +494,52 @@ func TestTrackerStats(t *testing.T) {
 			t.Error("SetTrackers succeeded on a closed store")
 		}
 	})
+}
+
+func TestOpenStoreMigrateFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conflict.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE torrent_trackers (hash TEXT NOT NULL)`); err != nil {
+		t.Fatalf("seed conflicting schema: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	s, err := OpenStore(path)
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("OpenStore succeeded against a conflicting schema")
+	}
+	if !strings.Contains(err.Error(), "migrate") {
+		t.Errorf("error = %q, want it to report the migration failure", err)
+	}
+
+	again, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer func() { _ = again.Close() }()
+	var applied int64
+	if err := again.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id = 1`).Scan(&applied); err != nil {
+		t.Fatalf("count goose rows: %v", err)
+	}
+	if applied != 0 {
+		t.Errorf("migration 1 recorded %d times after it failed, want 0", applied)
+	}
+}
+
+func TestOpenStoreNotADatabase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "garbage.db")
+	if err := os.WriteFile(path, []byte(strings.Repeat("not a sqlite file ", 64)), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s, err := OpenStore(path)
+	if err == nil {
+		_ = s.Close()
+		t.Fatal("OpenStore succeeded on a file that is not a database")
+	}
 }
